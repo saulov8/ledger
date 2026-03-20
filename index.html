@@ -787,36 +787,108 @@ function dragDrop(e) {
 function renderCycle() {
   const {start,end}=getCycleRange();
   const fmt2=d=>parseLocalDate(d).toLocaleDateString('en-AU',{day:'numeric',month:'short'});
-  const cyc=state.transactions.filter(t=>t.date>=start&&t.date<=end);
+  const cyc=getSortedTx().filter(t=>t.date>=start&&t.date<=end);
   const pending=cyc.filter(t=>!t.cleared);
   const income=cyc.filter(t=>t.type==='inflow').reduce((s,t)=>s+t.amount,0);
+  const totalOut=cyc.filter(t=>t.type==='outflow').reduce((s,t)=>s+t.amount,0);
   const pendingOut=pending.filter(t=>t.type==='outflow').reduce((s,t)=>s+t.amount,0);
+  const pendingIn=pending.filter(t=>t.type==='inflow').reduce((s,t)=>s+t.amount,0);
   const {cleared}=getBalances();
-  const afterPending=cleared-pendingOut;
-  const bills=cyc.filter(t=>t.bill&&t.type==='outflow');
+  // True remaining = cleared balance + pending inflows - pending outflows
+  const remaining=cleared+pendingIn-pendingOut;
   const el=document.getElementById('cycle-content');
+
+  // ── PIE CHART DATA ──
+  const catTotals={};
+  cyc.filter(t=>t.type==='outflow').forEach(t=>{
+    const k=t.group||'Other';
+    catTotals[k]=(catTotals[k]||0)+t.amount;
+  });
+  const pieData=Object.entries(catTotals).sort((a,b)=>b[1]-a[1]);
+  const pieTotal=pieData.reduce((s,[,v])=>s+v,0);
+  const PIE_COLORS=['#60a5fa','#34d399','#fbbf24','#f87171','#a78bfa','#fb923c','#e879f9','#2dd4bf','#94a3b8','#f472b6'];
+
+  function buildPie(data,total,cx,cy,r) {
+    if(!data.length) return '';
+    let angle=-Math.PI/2;
+    return data.map(([label,val],i)=>{
+      const slice=(val/total)*2*Math.PI;
+      const x1=cx+r*Math.cos(angle), y1=cy+r*Math.sin(angle);
+      angle+=slice;
+      const x2=cx+r*Math.cos(angle), y2=cy+r*Math.sin(angle);
+      const large=slice>Math.PI?1:0;
+      const color=PIE_COLORS[i%PIE_COLORS.length];
+      const path=`M${cx},${cy} L${x1.toFixed(1)},${y1.toFixed(1)} A${r},${r} 0 ${large},1 ${x2.toFixed(1)},${y2.toFixed(1)} Z`;
+      return `<path d="${path}" fill="${color}" stroke="var(--surface)" stroke-width="2"><title>${label}: ${fmt(val)} (${Math.round(val/total*100)}%)</title></path>`;
+    }).join('');
+  }
+
+  const pieSlices=buildPie(pieData,pieTotal,90,90,80);
+
   el.innerHTML=`
   <div class="pay-cycle-banner">
     <div><div class="pcb-label">Pay Cycle</div><div class="pcb-val">${fmt2(start)} – ${fmt2(end)}</div></div>
     <div class="pcb-sep"></div>
     <div><div class="pcb-label">Cleared Balance</div><div class="pcb-val" style="color:var(--green)">${fmt(cleared)}</div></div>
     <div class="pcb-sep"></div>
-    <div><div class="pcb-label">After Pending Clears</div><div class="pcb-val" style="color:${afterPending>=0?'var(--blue)':'var(--red)'}">${fmt(afterPending)}</div></div>
+    <div>
+      <div class="pcb-label">Remaining After All Clear</div>
+      <div class="pcb-val" style="color:${remaining>=0?'var(--blue)':'var(--red)'}">${fmt(remaining)}</div>
+    </div>
     <div class="pcb-sep"></div>
-    <div><div class="pcb-label">Pending Bills</div><div class="pcb-val" style="color:var(--amber)">${fmt(pendingOut)}</div></div>
+    <div><div class="pcb-label">Pending (${pending.length})</div><div class="pcb-val" style="color:var(--amber)">${fmt(pendingOut)}</div></div>
+    <div class="pcb-sep"></div>
+    <div><div class="pcb-label">Total Out</div><div class="pcb-val" style="color:var(--red)">${fmt(totalOut)}</div></div>
   </div>
-  <div class="two-col">
+
+  <div class="two-col" style="margin-bottom:14px">
     <div class="chart-card">
       <div class="chart-title">Income this cycle</div>
       <div style="font-family:var(--mono);font-size:28px;color:var(--green);margin-bottom:16px">${fmt(income)}</div>
-      ${cyc.filter(t=>t.type==='inflow').map(t=>`<div class="upcoming-row"><div class="upcoming-info">${t.description}<small>${t.date}</small></div><div style="color:var(--green);font-family:var(--mono);font-size:13px">+${fmt(t.amount)}</div></div>`).join('')||'<p style="color:var(--muted);font-size:12px">No income this cycle</p>'}
+      ${cyc.filter(t=>t.type==='inflow').map(t=>`
+        <div class="upcoming-row">
+          <div class="upcoming-info">${t.description}<small>${t.date}</small></div>
+          <div style="color:${t.cleared?'var(--green)':'var(--muted)'};font-family:var(--mono);font-size:13px">+${fmt(t.amount)}${t.cleared?'':' <span style="font-size:10px">pending</span>'}</div>
+        </div>`).join('')||'<p style="color:var(--muted);font-size:12px">No income this cycle</p>'}
     </div>
     <div class="chart-card">
-      <div class="chart-title">Upcoming Bills (${bills.filter(t=>!t.cleared).length} pending)</div>
-      ${bills.sort((a,b)=>a.date.localeCompare(b.date)).map(t=>`<div class="upcoming-row" style="${t.cleared?'opacity:.5':''}"><div class="upcoming-info">${t.description}<small>${t.date} · ${t.group||''}</small></div><div class="upcoming-amount">${t.cleared?'✓ ':'-'}${fmt(t.amount)}</div></div>`).join('')||'<p style="color:var(--muted);font-size:12px">No bills marked this cycle</p>'}
+      <div class="chart-title">Upcoming Transactions (${pending.filter(t=>t.type==='outflow').length} uncleared)</div>
+      <div style="max-height:320px;overflow-y:auto">
+        ${pending.filter(t=>t.type==='outflow').map(t=>`
+          <div class="upcoming-row">
+            <div class="upcoming-info">
+              ${t.description}${t.bill?`<span class="bill-badge">bill</span>`:''}
+              <small>${t.date} · ${t.group||''}${t.category?' › '+t.category:''}</small>
+            </div>
+            <div class="upcoming-amount">-${fmt(t.amount)}</div>
+          </div>`).join('')||'<p style="color:var(--muted);font-size:12px">All cleared ✓</p>'}
+      </div>
     </div>
   </div>
-  <div class="chart-card" style="margin-top:14px">
+
+  <div class="chart-card" style="margin-bottom:14px">
+    <div class="chart-title">Spending by Category this Cycle</div>
+    ${pieData.length ? `
+    <div style="display:flex;gap:28px;align-items:center;flex-wrap:wrap">
+      <svg viewBox="0 0 180 180" width="180" height="180" style="flex-shrink:0">
+        ${pieSlices}
+        <circle cx="90" cy="90" r="44" fill="var(--surface)"/>
+        <text x="90" y="86" text-anchor="middle" fill="var(--muted)" font-size="11" font-family="var(--mono)">${fmt(totalOut)}</text>
+        <text x="90" y="100" text-anchor="middle" fill="var(--muted)" font-size="9" font-family="var(--mono)">total out</text>
+      </svg>
+      <div style="flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px">
+        ${pieData.map(([k,v],i)=>`
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 0">
+            <div style="width:10px;height:10px;border-radius:2px;background:${PIE_COLORS[i%PIE_COLORS.length]};flex-shrink:0"></div>
+            <div style="flex:1;font-size:12px;color:var(--text)">${k}</div>
+            <div style="font-family:var(--mono);font-size:12px;color:var(--muted)">${fmt(v)}</div>
+            <div style="font-family:var(--mono);font-size:11px;color:var(--muted2);min-width:32px;text-align:right">${Math.round(v/pieTotal*100)}%</div>
+          </div>`).join('')}
+      </div>
+    </div>` : '<p style="color:var(--muted);font-size:12px">No outgoing transactions this cycle</p>'}
+  </div>
+
+  <div class="chart-card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <div class="chart-title">Cycle Start Date</div>
       <div style="display:flex;gap:8px;align-items:center">
