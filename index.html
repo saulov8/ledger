@@ -829,8 +829,56 @@ function renderCycle() {
 function updateCycleStart(){const v=document.getElementById('cycle-start-input').value;if(v){state.cycleStart=v;save();renderCycle();}}
 
 // ── BILLS ──
+function fortnightlyRate(recurrence) {
+  switch(recurrence) {
+    case 'weekly':      return 2;
+    case 'fortnightly': return 1;
+    case 'monthly':     return 12 / 26;
+    case 'quarterly':   return 4 / 26;
+    case 'yearly':      return 1 / 26;
+    default:            return null;
+  }
+}
+
+function buildNormalisedBills() {
+  const allBills = state.transactions.filter(t => t.bill && t.type === 'outflow');
+  const seriesMap = {};
+  allBills.forEach(t => {
+    const key = t.recurringId || ((t.description||'')+'|'+(t.category||''));
+    if (!seriesMap[key]) {
+      seriesMap[key] = {
+        description: t.description, group: t.group, category: t.category,
+        recurrence: t.recurrence || null, instances: []
+      };
+    }
+    seriesMap[key].instances.push(t);
+    if (t.recurrence) seriesMap[key].recurrence = t.recurrence;
+  });
+  const CYCLES_PER_YEAR = 26;
+  const result = [];
+  Object.values(seriesMap).forEach(s => {
+    const rate = fortnightlyRate(s.recurrence);
+    let fortnightlyCost, annualCost, note;
+    if (rate !== null) {
+      const singleAmount = s.instances[0].amount;
+      fortnightlyCost = singleAmount * rate;
+      annualCost = fortnightlyCost * CYCLES_PER_YEAR;
+      note = s.recurrence;
+    } else {
+      const total = s.instances.reduce((sum, t) => sum + t.amount, 0);
+      annualCost = total;
+      fortnightlyCost = total / CYCLES_PER_YEAR;
+      note = 'one-off';
+    }
+    result.push({
+      description: s.description, group: s.group, category: s.category,
+      recurrence: s.recurrence, fortnightlyCost, annualCost, note
+    });
+  });
+  return result.sort((a, b) => b.fortnightlyCost - a.fortnightlyCost);
+}
+
 function groupBills(bills) {
-  // Group by description+category, sum amounts, track count and cleared status
   const map = {};
   bills.forEach(t => {
     const key = (t.description||'') + '|' + (t.category||'');
@@ -846,7 +894,6 @@ function groupBills(bills) {
 }
 
 function renderBills() {
-  // Build list of all cycle starts (fortnightly from first tx date to end of year)
   const allDates=[...state.transactions].map(t=>t.date).sort();
   const firstDate=allDates[0]||state.cycleStart;
   const cycles=[];
@@ -866,71 +913,89 @@ function renderBills() {
   const curCycle=getCycleRange();
   const selCycle=document.getElementById('bills-cycle-sel')?.value||curCycle.start;
   const cycle=cycles.find(c=>c.start===selCycle)||curCycle;
-  const txsInCycle=state.transactions.filter(t=>t.date>=cycle.start&&t.date<=cycle.end);
-  const bills=txsInCycle.filter(t=>t.bill&&t.type==='outflow');
-  const income=txsInCycle.filter(t=>t.type==='inflow').reduce((s,t)=>s+t.amount,0);
-  const billTotal=bills.reduce((s,t)=>s+t.amount,0);
-  const pct=income>0?Math.round(billTotal/income*100):0;
-  const groupedCycle=groupBills(bills);
 
-  // Monthly view
-  const month=cycle.start.substring(0,7);
-  const monthBills=state.transactions.filter(t=>t.bill&&t.type==='outflow'&&t.date.startsWith(month));
-  const monthTotal=monthBills.reduce((s,t)=>s+t.amount,0);
-  const monthIncome=state.transactions.filter(t=>t.type==='inflow'&&t.date.startsWith(month)).reduce((s,t)=>s+t.amount,0);
-  const groupedMonth=groupBills(monthBills);
+  const txsInCycle=state.transactions.filter(t=>t.date>=cycle.start&&t.date<=cycle.end);
+  const cycleBills=txsInCycle.filter(t=>t.bill&&t.type==='outflow');
+  const cycleIncome=txsInCycle.filter(t=>t.type==='inflow').reduce((s,t)=>s+t.amount,0);
+  const cycleBillTotal=cycleBills.reduce((s,t)=>s+t.amount,0);
+  const cyclePct=cycleIncome>0?Math.round(cycleBillTotal/cycleIncome*100):0;
+  const groupedCycle=groupBills(cycleBills);
+
+  const normalised=buildNormalisedBills();
+  const normFortnightlyTotal=normalised.reduce((s,b)=>s+b.fortnightlyCost,0);
+  const normAnnualTotal=normalised.reduce((s,b)=>s+b.annualCost,0);
+
+  const salaryTx=state.transactions.find(t=>t.type==='inflow'&&t.recurrence==='fortnightly'&&t.group==='Income');
+  const annualIncome=state.transactions.filter(t=>t.type==='inflow'&&t.group==='Income').reduce((s,t)=>s+t.amount,0);
+  const projectedAnnual=salaryTx?salaryTx.amount*26:annualIncome;
+  const projectedFortnightly=projectedAnnual/26;
+
+  const normPct=projectedFortnightly>0?Math.round(normFortnightlyTotal/projectedFortnightly*100):0;
+  const annualPct=projectedAnnual>0?Math.round(normAnnualTotal/projectedAnnual*100):0;
+  const pctColor=p=>p>80?'var(--red)':p>60?'var(--amber)':'var(--green)';
 
   el.innerHTML=`
   <div class="section-header" style="margin-bottom:20px">
     <div class="section-title">Bills Overview</div>
     <div class="filters">
       <select id="bills-cycle-sel" class="filter-sel" onchange="renderBills()">
-        ${cycles.map(c=>`<option value="${c.start}"${c.start===selCycle?' selected':''}>${fmt2(c.start)} – ${fmt2(c.end)}</option>`).join('')}
+        ${cycles.map(c=>`<option value="${c.start}"${c.start===selCycle?' selected':''}>${fmt2(c.start)} \u2013 ${fmt2(c.end)}</option>`).join('')}
       </select>
     </div>
   </div>
-  <div class="cards" style="grid-template-columns:repeat(3,1fr);margin-bottom:24px">
-    <div class="bills-stat"><div class="bills-stat-val">${fmt(billTotal)}</div><div class="bills-stat-label">Bills this cycle</div></div>
-    <div class="bills-stat"><div class="bills-stat-val">${fmt(income)}</div><div class="bills-stat-label">Income this cycle</div></div>
-    <div class="bills-stat"><div class="bills-stat-val" style="color:${pct>80?'var(--red)':pct>60?'var(--amber)':'var(--green)'}">${pct}%</div><div class="bills-stat-label">of income used by bills</div></div>
+  <div class="cards" style="grid-template-columns:repeat(4,1fr);margin-bottom:24px">
+    <div class="bills-stat"><div class="bills-stat-val">${fmt(cycleBillTotal)}</div><div class="bills-stat-label">Bills this cycle</div></div>
+    <div class="bills-stat"><div class="bills-stat-val">${fmt(cycleIncome)}</div><div class="bills-stat-label">Income this cycle</div></div>
+    <div class="bills-stat"><div class="bills-stat-val" style="color:${pctColor(normPct)}">${normPct}%</div><div class="bills-stat-label">Avg fortnightly bills / income</div></div>
+    <div class="bills-stat"><div class="bills-stat-val" style="color:${pctColor(annualPct)}">${annualPct}%</div><div class="bills-stat-label">Annual bills / income</div></div>
   </div>
   <div class="two-col">
     <div class="chart-card">
-      <div class="chart-title">Bills this cycle — ${fmt2(cycle.start)} to ${fmt2(cycle.end)}</div>
-      ${groupedCycle.length ? groupedCycle.map(b => {
-        const allCleared = b.clearedCount === b.count;
-        const partCleared = b.clearedCount > 0 && b.clearedCount < b.count;
-        const status = allCleared ? 'cleared' : partCleared ? `${b.clearedCount}/${b.count} cleared` : 'pending';
-        const opacity = allCleared ? 'opacity:.6' : '';
-        return `<div class="upcoming-row" style="${opacity}">
+      <div class="chart-title">Bills this cycle \u2014 ${fmt2(cycle.start)} to ${fmt2(cycle.end)}</div>
+      ${groupedCycle.length?groupedCycle.map(b=>{
+        const allCleared=b.clearedCount===b.count;
+        const partCleared=b.clearedCount>0&&b.clearedCount<b.count;
+        const status=allCleared?'cleared':partCleared?`${b.clearedCount}/${b.count} cleared`:'pending';
+        return `<div class="upcoming-row" style="${allCleared?'opacity:.6':''}">
           <div class="upcoming-info">
-            ${b.description}${b.count>1?` <span style="font-size:10px;font-family:var(--mono);color:var(--muted)">×${b.count}</span>`:''}
-            <small>${b.group||''}${b.category?' › '+b.category:''}</small>
+            ${b.description}${b.count>1?` <span style="font-size:10px;font-family:var(--mono);color:var(--muted)">\xd7${b.count}</span>`:''}
+            <small>${b.group||''}${b.category?' \u203a '+b.category:''}</small>
           </div>
           <div style="text-align:right">
-            <div class="upcoming-amount" style="color:${allCleared?'var(--green)':'var(--red)'}">
-              ${allCleared?'✓ ':''}-${fmt(b.amount)}
-            </div>
+            <div class="upcoming-amount" style="color:${allCleared?'var(--green)':'var(--red)'}">${allCleared?'\u2713 ':''}-${fmt(b.amount)}</div>
             <div style="font-size:10px;color:var(--muted);font-family:var(--mono)">${status}</div>
           </div>
         </div>`;
-      }).join('') : '<p style="color:var(--muted);font-size:12px;padding:20px 0">No bills in this cycle</p>'}
+      }).join(''):'<p style="color:var(--muted);font-size:12px;padding:20px 0">No bills in this cycle</p>'}
     </div>
     <div class="chart-card">
-      <div class="chart-title">Month of ${parseLocalDate(month+'-01').toLocaleDateString('en-AU',{month:'long',year:'numeric'})}</div>
-      <div style="margin-bottom:16px">
-        <div style="font-family:var(--mono);font-size:22px;color:var(--red)">${fmt(monthTotal)}</div>
-        <div style="font-size:11px;color:var(--muted);margin-top:4px">bills · ${monthIncome>0?Math.round(monthTotal/monthIncome*100):0}% of ${fmt(monthIncome)} income</div>
+      <div class="chart-title">Normalised Fortnightly Cost</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:6px">
+        <div>
+          <div style="font-family:var(--mono);font-size:22px;color:var(--red)">${fmt(normFortnightlyTotal)}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">per fortnight \u00b7 ${normPct}% of ${fmt(projectedFortnightly)} salary</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-family:var(--mono);font-size:14px;color:var(--muted)">${fmt(normAnnualTotal)}</div>
+          <div style="font-size:11px;color:var(--muted)">per year \u00b7 ${annualPct}% of ${fmt(projectedAnnual)}</div>
+        </div>
       </div>
-      <div class="progress-bar" style="margin-bottom:16px"><div class="progress-fill" style="width:${Math.min(100,monthIncome>0?Math.round(monthTotal/monthIncome*100):0)}%;background:linear-gradient(90deg,var(--red),#b91c1c)"></div></div>
-      ${groupedMonth.length ? groupedMonth.map(b => `
-        <div class="upcoming-row">
-          <div class="upcoming-info">
-            ${b.description}${b.count>1?` <span style="font-size:10px;font-family:var(--mono);color:var(--muted)">×${b.count}</span>`:''}
-            <small>${b.group||''}${b.category?' › '+b.category:''}</small>
+      <div class="progress-bar" style="margin-bottom:16px">
+        <div class="progress-fill" style="width:${Math.min(100,normPct)}%;background:linear-gradient(90deg,var(--red),#b91c1c)"></div>
+      </div>
+      ${normalised.map(b=>{
+        const barPct=normFortnightlyTotal>0?Math.round(b.fortnightlyCost/normFortnightlyTotal*100):0;
+        return `<div class="upcoming-row">
+          <div class="upcoming-info" style="flex:1">
+            ${b.description}
+            <small>${b.group||''}${b.category?' \u203a '+b.category:''} \u00b7 <span style="color:var(--amber)">${b.note}</span></small>
           </div>
-          <div class="upcoming-amount">-${fmt(b.amount)}</div>
-        </div>`).join('') : '<p style="color:var(--muted);font-size:12px">No bills this month</p>'}
+          <div style="text-align:right;min-width:150px">
+            <div style="font-family:var(--mono);font-size:12px;color:var(--red)">-${fmt(b.fortnightlyCost)}<span style="color:var(--muted);font-size:10px"> /fn</span></div>
+            <div style="font-size:10px;color:var(--muted);font-family:var(--mono)">${fmt(b.annualCost)} /yr \u00b7 ${barPct}%</div>
+          </div>
+        </div>`;
+      }).join('')||'<p style="color:var(--muted);font-size:12px">No bills marked yet</p>'}
     </div>
   </div>`;
 }
