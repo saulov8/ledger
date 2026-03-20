@@ -501,70 +501,79 @@ function save() {
 }
 
 // ── PASSWORD SCREEN ──
-async function showPasswordScreen(mode) {
+// ── PASSWORD HASH (baked in — only owner can unlock) ──
+// To generate your hash: open app, type generatePasswordHash('yourpassword') in browser console
+// Then update PASSWORD_HASH below and redeploy to GitHub
+const PASSWORD_HASH = 'SET_ON_FIRST_RUN';
+
+async function hashPassword(password) {
+  const enc = new TextEncoder();
+  const buf = await crypto.subtle.digest('SHA-256', enc.encode(password + 'ledger-hash-salt-v1'));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+window.generatePasswordHash = async (pw) => {
+  const h = await hashPassword(pw);
+  console.log('%cPASSWORD_HASH to paste into your source code:\n' + h, 'color:lime;font-size:14px;font-weight:bold');
+  return h;
+};
+
+async function showPasswordScreen() {
+  const isSetup = PASSWORD_HASH === 'SET_ON_FIRST_RUN';
   return new Promise(resolve => {
     const overlay = document.createElement('div');
-    overlay.style.cssText = `position:fixed;inset:0;background:#0d0f12;z-index:9999;display:flex;align-items:center;justify-content:center;`;
-    const isFirst = mode === 'first';
+    overlay.style.cssText = 'position:fixed;inset:0;background:#0d0f12;z-index:9999;display:flex;align-items:center;justify-content:center;';
     overlay.innerHTML = `
       <div style="background:var(--surface);border:1px solid var(--border2);border-radius:12px;padding:36px;width:360px;text-align:center">
         <div style="font-family:var(--mono);font-size:22px;font-weight:500;margin-bottom:6px">ledger<span style="color:var(--green)">.</span></div>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:28px">${isFirst ? 'Set a password to encrypt your data' : 'Enter your password to unlock'}</div>
-        <input type="password" id="pw-input" placeholder="Password" style="width:100%;background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;margin-bottom:${isFirst?'12px':'16px'}">
-        ${isFirst ? `<input type="password" id="pw-confirm" placeholder="Confirm password" style="width:100%;background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;margin-bottom:16px">` : ''}
+        <div style="font-size:13px;color:var(--muted);margin-bottom:28px">${isSetup ? 'First run: set your password' : 'Enter your password to unlock'}</div>
+        <input type="password" id="pw-input" placeholder="Password" style="width:100%;background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;margin-bottom:12px">
+        ${isSetup ? '<input type="password" id="pw-confirm" placeholder="Confirm password" style="width:100%;background:var(--surface2);border:1px solid var(--border2);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;margin-bottom:12px">' : ''}
         <div id="pw-error" style="font-size:12px;color:var(--red);min-height:18px;margin-bottom:10px"></div>
         <button id="pw-btn" style="width:100%;background:var(--green);color:#000;border:none;padding:11px;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer">
-          ${isFirst ? 'Set Password & Start' : 'Unlock'}
+          ${isSetup ? 'Set Password' : 'Unlock'}
         </button>
-        ${!isFirst ? `<div style="margin-top:14px;font-size:11px;color:var(--muted)">First time on this device? Your data will sync after unlocking.</div>` : ''}
+        ${isSetup ? '<div style="margin-top:14px;font-size:11px;color:var(--amber)">After setting, copy the hash from the browser console and update PASSWORD_HASH in the source, then redeploy.</div>' : ''}
       </div>`;
     document.body.appendChild(overlay);
-
     const input = overlay.querySelector('#pw-input');
     const btn = overlay.querySelector('#pw-btn');
     const errEl = overlay.querySelector('#pw-error');
     input.focus();
-
     const attempt = async () => {
       const pw = input.value;
-      if (!pw || pw.length < 4) { errEl.textContent = 'Password must be at least 4 characters'; return; }
-      if (isFirst) {
-        const confirm = overlay.querySelector('#pw-confirm').value;
+      if (!pw || pw.length < 4) { errEl.textContent = 'At least 4 characters required'; return; }
+      if (isSetup) {
+        const confirm = overlay.querySelector('#pw-confirm')?.value;
         if (pw !== confirm) { errEl.textContent = 'Passwords do not match'; return; }
-      }
-      btn.textContent = 'Unlocking...';
-      btn.disabled = true;
-      try {
+        btn.textContent = 'Setting up...'; btn.disabled = true;
+        await generatePasswordHash(pw);
         cryptoKey = await deriveKey(pw);
         document.body.removeChild(overlay);
-        resolve(pw);
-      } catch(e) {
-        errEl.textContent = 'Failed to set up encryption';
-        btn.textContent = isFirst ? 'Set Password & Start' : 'Unlock';
-        btn.disabled = false;
+        resolve();
+        return;
       }
+      btn.textContent = 'Verifying...'; btn.disabled = true;
+      const hash = await hashPassword(pw);
+      if (hash !== PASSWORD_HASH) {
+        errEl.textContent = 'Incorrect password';
+        btn.textContent = 'Unlock'; btn.disabled = false;
+        input.value = ''; input.focus();
+        return;
+      }
+      cryptoKey = await deriveKey(pw);
+      document.body.removeChild(overlay);
+      resolve();
     };
-
     btn.addEventListener('click', attempt);
     overlay.querySelectorAll('input').forEach(inp => inp.addEventListener('keydown', e => { if(e.key==='Enter') attempt(); }));
   });
 }
 
-// ── INIT WITH SUPABASE ──
 async function initApp() {
-  setSyncStatus('offline', '⬤ loading...');
-
-  // Check if first time (no password hash stored)
-  const hasPassword = !!localStorage.getItem('ledger_pw_set');
-  const mode = hasPassword ? 'unlock' : 'first';
-
-  await showPasswordScreen(mode);
-
-  if (!hasPassword) localStorage.setItem('ledger_pw_set', '1');
-
-  setSyncStatus('offline', '⬤ syncing...');
-
-  // Try to load from Supabase
+  setSyncStatus('offline', '\u2b24 loading...');
+  await showPasswordScreen();
+  setSyncStatus('offline', '\u2b24 syncing...');
   try {
     const encrypted = await supaRead();
     if (encrypted && encrypted.length > 10) {
@@ -577,23 +586,18 @@ async function initApp() {
           setSyncStatus('ok');
         }
       } catch(e) {
-        // Decryption failed — wrong password
-        localStorage.removeItem('ledger_pw_set');
-        alert('⚠️ Wrong password — or this is the first time on this device with existing data.\n\nPlease reload and try again.');
-        location.reload();
-        return;
+        setSyncStatus('error', '\u2b24 decrypt failed');
+        alert('\u26a0\ufe0f Could not decrypt data. Wrong password, or data was encrypted with a different password.');
       }
     } else {
-      // First time — push local cache to Supabase
-      const encrypted = await encrypt(state);
-      await supaWrite(encrypted);
+      const enc = await encrypt(state);
+      await supaWrite(enc);
       setSyncStatus('ok');
     }
   } catch(e) {
     console.warn('Supabase unavailable, running offline:', e);
-    setSyncStatus('offline', '⬤ offline mode');
+    setSyncStatus('offline', '\u2b24 offline mode');
   }
-
   populateModalGroups();
   renderDashboard();
   applyColWidths();
