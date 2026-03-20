@@ -70,8 +70,9 @@ select.filter-sel{background:var(--surface2);border:1px solid var(--border2);col
 .tx-col-resize{display:flex;align-items:center;gap:4px;position:relative;}
 .tx-col-resize .resize-handle{width:4px;height:20px;background:var(--border2);border-radius:2px;cursor:col-resize;flex-shrink:0;margin-left:4px;transition:background .15s;}
 .tx-col-resize .resize-handle:hover{background:var(--green);}
-.tx-notes{font-size:11px;color:var(--muted);font-family:var(--sans);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;}
+.tx-notes{font-size:12px;color:var(--muted);font-family:var(--sans);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;padding-left:12px;border-left:1px solid var(--border2);margin-left:4px;}
 .tx-notes:hover{color:var(--text);}
+.tx-notes.has-note{color:var(--text);font-style:italic;}
 .recurring-badge{display:inline-block;font-size:10px;font-family:var(--mono);padding:1px 6px;border-radius:3px;background:var(--blue-dim);color:var(--blue);margin-left:4px;}
 .tx-row:last-child{border-bottom:none;}
 .tx-row:hover{background:var(--surface2);}
@@ -738,7 +739,7 @@ function renderTransactions() {
       <div class="tx-category">${t.category||''}</div>
       <div class="tx-amount ${t.type}">${t.type==='inflow'?'+':'−'}${fmt(t.amount)}</div>
       <div class="${bal<0?'tx-balance negative':'tx-balance'}">${fmt(bal)}</div>
-      <div class="tx-notes" title="${(t.notes||'').replace(/"/g,'&quot;')}" onclick="openEditModal('${t.id}')">${t.notes||'<span style="color:var(--muted2);font-size:10px">+ add note</span>'}</div>
+      <div class="tx-notes${t.notes?' has-note':''}" title="${(t.notes||'').replace(/"/g,'&quot;')}" onclick="openEditModal('${t.id}')">${t.notes||'<span style="color:var(--border2);font-size:11px">── add note</span>'}</div>
       <div class="tx-actions">
         <button class="icon-btn drag-handle" title="Drag to reorder (same day)">⠿</button>
         <button class="icon-btn edit" onclick="openEditModal('${t.id}')" title="Edit">✎</button>
