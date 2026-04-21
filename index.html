@@ -406,7 +406,13 @@ async function encrypt(obj) {
   const buf = new Uint8Array(12 + ct.byteLength);
   buf.set(iv, 0);
   buf.set(new Uint8Array(ct), 12);
-  return btoa(String.fromCharCode(...buf));
+  // Safe btoa for large arrays — avoid spread operator stack overflow
+  let binary = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < buf.length; i += chunkSize) {
+    binary += String.fromCharCode(...buf.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 
 async function decrypt(b64) {
